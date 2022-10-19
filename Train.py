@@ -7,6 +7,7 @@ from Models import *
 from bayes_opt import BayesianOptimization
 import torch
 import time
+import traceback
 
 files = ['s','j','na','l','ni']
 totalGestureNames = ['left','right','forward','backward','bounce up','bounce down','turn left','turn right','shake lr','shake ud', \
@@ -17,6 +18,7 @@ for i in usedGestures:
     gestureNames.append(totalGestureNames[i])
 gestureNames.append('no gesture')
 learnTreshold = False
+nFolds = 5
 
 def fix_seed(manualSeed):
     
@@ -27,7 +29,7 @@ def fix_seed(manualSeed):
     torch.cuda.manual_seed(manualSeed)
     torch.cuda.manual_seed_all(manualSeed)
     
-def createData(inputFiles, testFiles, nFolds=4):
+def createData(inputFiles, testFiles):
     trainset = UniHHIMUGestures(dataDir='dataSets/', 
                                 train=True, 
                                 inputFiles=inputFiles,
@@ -35,7 +37,7 @@ def createData(inputFiles, testFiles, nFolds=4):
                                 useNormalized=2, 
                                 learnTreshold=learnTreshold,
                                 shuffle=True,
-                                nFolds=nFolds
+                                nFolds=len(inputFiles)
                                )
 
     testset = UniHHIMUGestures(dataDir='dataSets/', 
@@ -45,7 +47,7 @@ def createData(inputFiles, testFiles, nFolds=4):
                                useNormalized=2, 
                                learnTreshold=learnTreshold,
                                shuffle=True,
-                               nFolds=nFolds                              
+                               nFolds=len(inputFiles)                              
                               )
 
     trainloader = DataLoader(trainset, batch_size=1,
@@ -72,13 +74,39 @@ def trainESN2(trainloader, esn, fraction=1):
     x, y = getData(trainloader, fraction)
     return esn.train(x, y)
 
+def trainESN3(trainloader, esn, fold, isVal):
+    x, y = getData(trainloader, 1)
+    size = x.shape[0]
+    testIndices = list(range(int(size*fold/nFolds), int((size+1)*fold/nFolds)))
+    mask = np.ones(x.shape[0], dtype=bool)
+    mask[testIndices] = False
+    x = x[mask]
+    y = y[mask]
+    if isVal:
+        x = x[:int(x.shape[0]*(nFolds-2)/(nFolds-1))]
+        y = y[:int(y.shape[0]*(nFolds-2)/(nFolds-1))]
+    return esn.fit(x, y, warmup=100)
+
+def trainESN4(trainloader, esn, fold, isVal):
+    x, y = getData(trainloader, 1)
+    size = x.shape[0]
+    testIndices = list(range(int(size*fold/nFolds), int((size+1)*fold/nFolds)))
+    mask = np.ones(x.shape[0], dtype=bool)
+    mask[testIndices] = False
+    x = x[mask]
+    y = y[mask]
+    if isVal:
+        x = x[:int(x.shape[0]*(nFolds-2)/(nFolds-1))]
+        y = y[:int(y.shape[0]*(nFolds-2)/(nFolds-1))]
+    return esn.train(x, y)
+
 def testESN(esn, testFiles, startFraction=0, stopFraction=1, fixed_threshold=0.4):
     testF1MaxApps = []
     testAccuracies = []
     
-    _, _, _, testloader = createData(inputFiles=testFiles, testFiles=testFiles)
+    _, _, trainloader, testloader = createData(inputFiles=testFiles, testFiles=testFiles)
 
-    for test_inputs, test_targets in testloader:
+    for test_inputs, test_targets in trainloader:
         inputs = test_inputs[0]
         targets = test_targets[0]
         inputs = inputs[int(inputs.shape[0]*startFraction):int(inputs.shape[0]*stopFraction)].numpy()
@@ -117,12 +145,41 @@ def testModel(params, trainFiles, testFiles, trainFraction=1, startFraction=0, s
                 break
             except Exception as e:
                 print(e)
+                print(traceback.format_exc())
                 continue
     if (len(scores)==0):
         return [0], [0], [], [], []
     return (scores, accuracies, targets, preds, times)
 
-def optimizer_global1(pbounds, modelCreator=createESN, trainFunc=trainESN, numEvals=3, confusionMatrix=True, behaviorSpace=False, trainingTime=True):
+def testModel2(params, trainFiles, testFiles, fold, isVal, numEvals=1, modelCreator=createESN, trainFunc=trainESN3):
+    scores = []
+    accuracies = []
+    targets = np.array([])
+    preds = np.array([])
+    times = []
+    for _ in range(numEvals):
+        _, _, trainloader, _ = createData(inputFiles=trainFiles, testFiles=testFiles)
+        esn = modelCreator(**params)
+        for i in range(5):
+            try:
+                start = time.time()
+                trainFunc(trainloader, esn, fold, isVal)
+                times.append(time.time()-start)
+                score, accuracy, target, pred = testESN(esn, testFiles, fold/nFolds, (fold+1)/nFolds)
+                targets = np.append(targets, target)
+                preds = np.append(preds, pred)
+                scores.extend(score)
+                accuracies.extend(accuracy)
+                break
+            except Exception as e:
+                print(e)
+                print(traceback.format_exc())
+                continue
+    if (len(scores)==0):
+        return [0], [0], [], [], []
+    return (scores, accuracies, targets, preds, times)
+
+def optimizer_global1(pbounds, modelCreator=createESN, trainFunc=trainESN, numEvals=3):
     files = ['j','s','na','l','ni']
     optimalParams = {}
     f1Scores = []
@@ -143,6 +200,7 @@ def optimizer_global1(pbounds, modelCreator=createESN, trainFunc=trainESN, numEv
                 f1 = np.array(scores1).mean()
                 return f1
             except:
+                print(traceback.format_exc())
                 return -0.01
 
         optimizer = BayesianOptimization(
@@ -163,31 +221,72 @@ def optimizer_global1(pbounds, modelCreator=createESN, trainFunc=trainESN, numEv
         preds = np.append(preds, pred)
         times.extend(trainingTimes)
     print(np.array(f1Scores).mean(), np.array(f1Scores).std(), np.array(accuracies).mean(), np.array(accuracies).std())
-    if confusionMatrix:
-        makeConfusionMatrix(targets, preds)
-    if trainingTime:
-        print("Training time:", sum(times)/len(times), statistics.pstdev(times))
+    print("Training time:", sum(times)/len(times), statistics.pstdev(times))
     return optimalParams
 
-def optimizer_user(pbounds, modelCreator, trainFunc, trainFraction=0.6, valFraction=0.2, numEvals=3, confusionMatrix=True, behaviorSpace=False, trainingTime=True):
+def optimizer_user(pbounds, modelCreator, trainFunc, numEvals=3):
     files = ['j', 'na','l','ni', 's']
     optimalParams = {}
-    f1Scores = []
-    accuracies = []
-    targets = np.array([])
-    preds = np.array([])
+    f1Scores = {}
+    accuracies = {}
     times = []
-    p = []
+    for eachFile in files:
+        f1Scores[eachFile] = []
+        accuracies[eachFile] = []
     for idx in range(5):
         trainFiles = [files[idx]]
         testFiles = [files[idx]]
+        
+        for i in range(nFolds):
+            def black_box_function(**params):
+                try:
+                    scores, _, _, _, _ = testModel2(params, trainFiles, testFiles, i, True, numEvals, modelCreator, trainFunc)
+                    f1 = np.array(scores).mean()
+                    return f1
+                except:
+                    print(traceback.format_exc())
+                    return -0.01
 
+            optimizer = BayesianOptimization(
+                f=black_box_function,
+                pbounds=pbounds,
+            )
+
+            optimizer.maximize(
+                init_points=15,
+                n_iter=15,
+            )
+            s, a, _, _, trainingTimes = testModel2(optimizer.max['params'], trainFiles, testFiles, i, False, 10, modelCreator, trainFunc)
+            optimalParams[testFiles[0]]=optimizer.max['params']
+            f1Scores[testFiles[0]].extend(s)
+            accuracies[testFiles[0]].extend(a)
+            times.extend(trainingTimes)
+    for key in list(f1Scores.keys()):
+        scores = f1Scores[key]
+        acc = accuracies[key]
+        print("{} f1 score: {} ({}), accuracy: {}, ({})".format(key, np.array(scores).mean(), np.array(scores).std(), np.array(acc).mean(), np.array(acc).std()))
+    print(np.concatenate(list(f1Scores.values())).mean(), np.concatenate(list(f1Scores.values())).std(), np.concatenate(list(accuracies.values())).mean(), np.concatenate(list(accuracies.values())).std())
+    print("Training time:", sum(times)/len(times), statistics.pstdev(times))
+    return optimalParams
+
+def optimizer_global2(pbounds, modelCreator, trainFunc, numEvals=3):
+    files = ['s','j','na','l','ni']
+    optimalParams = {}
+    f1Scores = {}
+    accuracies = {}
+    times = []
+    for eachFile in files:
+        f1Scores[eachFile] = []
+        accuracies[eachFile] = []
+
+    for i in range(nFolds):
         def black_box_function(**params):
             try:
-                scores, _, _, _, _ = testModel(params, trainFiles, testFiles, trainFraction, trainFraction, trainFraction+valFraction, numEvals, modelCreator, trainFunc)
+                scores, _, _, _, _ = testModel2(params, files, files, i, True, numEvals, modelCreator, trainFunc)
                 f1 = np.array(scores).mean()
                 return f1
             except:
+                print(traceback.format_exc())
                 return -0.01
 
         optimizer = BayesianOptimization(
@@ -199,66 +298,18 @@ def optimizer_user(pbounds, modelCreator, trainFunc, trainFraction=0.6, valFract
             init_points=15,
             n_iter=15,
         )
-        s, a, target, pred, trainingTimes = testModel(optimizer.max['params'], trainFiles, testFiles, trainFraction+valFraction, trainFraction+valFraction, 1, 20, modelCreator, trainFunc)
-        optimalParams[testFiles[0]]=optimizer.max['params']
-        print(testFiles, np.array(s).mean(), np.array(s).std(), np.array(a).mean(), np.array(a).std())
-        f1Scores+=s
-        accuracies+=a
-        targets = np.append(targets, target)
-        preds = np.append(preds, pred)
-        times.extend(trainingTimes)
-    print(np.array(f1Scores).mean(), np.array(f1Scores).std(), np.array(accuracies).mean(), np.array(accuracies).std())
-    if confusionMatrix:
-        makeConfusionMatrix(targets, preds)
-    if trainingTime:
-        print("Training time:", sum(times)/len(times), statistics.pstdev(times))
+        for eachFile in files:
+            subjectScores, subjectAccuracies, target, pred, trainingTimes = testModel2(optimizer.max['params'], files, [eachFile], i, False, 10, modelCreator, trainFunc)
+            f1Scores[eachFile].extend(subjectScores)
+            accuracies[eachFile].extend(subjectAccuracies)
+            times.extend(trainingTimes)
+    for key in list(f1Scores.keys()):
+        scores = f1Scores[key]
+        acc = accuracies[key]
+        print("{} f1 score: {} ({}), accuracy: {}, ({})".format(key, np.array(scores).mean(), np.array(scores).std(), np.array(acc).mean(), np.array(acc).std()))
+    print(np.concatenate(list(f1Scores.values())).mean(), np.concatenate(list(f1Scores.values())).std(), np.concatenate(list(accuracies.values())).mean(), np.concatenate(list(accuracies.values())).std())
+    print("Training time:", sum(times)/len(times), statistics.pstdev(times))
     return optimalParams
-
-def optimizer_global2(pbounds, modelCreator, trainFunc, trainFraction=0.6, valFraction=0.2, numEvals=3, confusionMatrix=True, behaviorSpace=False, trainingTime=True):
-    files = ['s','j','na','l','ni']
-    optimalParams = {}
-    scores = {}
-    accuracies = {}
-    targets = np.array([])
-    preds = np.array([])
-    times = []
-    for eachFile in files:
-        scores[eachFile] = []
-        accuracies[eachFile] = []
-
-    def black_box_function(**params):
-        try:
-            scores, _, _, _, _ = testModel(params, files, files, trainFraction, trainFraction, trainFraction + valFraction, numEvals, modelCreator, trainFunc)
-            f1 = np.array(scores).mean()
-            return f1
-        except:
-            return -0.01
-
-    optimizer = BayesianOptimization(
-        f=black_box_function,
-        pbounds=pbounds,
-    )
-
-    optimizer.maximize(
-        init_points=15,
-        n_iter=15,
-    )
-    # trainset, testset, trainloader, testloader = createData(files, files, 5)
-    for eachFile in files:
-        subjectScores, subjectAccuracies, target, pred, trainingTimes = testModel(optimizer.max['params'], files, [eachFile], trainFraction + valFraction, trainFraction + valFraction, 1, 20, modelCreator, trainFunc)
-        scores[eachFile] = subjectScores
-        accuracies[eachFile] = subjectAccuracies
-        targets = np.append(targets, target)
-        preds = np.append(preds, pred)
-        times.extend(trainingTimes)
-    # scores, accuracies, _, _ = testModel(optimizer.max['params'], trainloader, testloader, trainFraction + valFraction, trainFraction + valFraction, 1, 20, modelCreator, trainFunc)
-    
-    print(np.array(list(scores.values())).mean(), np.array(list(scores.values())).std(), np.array(list(accuracies.values())).mean(), np.array(list(accuracies.values())).std())
-    if confusionMatrix:
-        makeConfusionMatrix(targets, preds)
-    if trainingTime:
-        print("Training time:", sum(times)/len(times), statistics.pstdev(times))
-    return scores, accuracies
 
 # def optimizer(pbounds, modelCreator, trainAndTestModel, confusionMatrix=False, behaviorSpace=False, trainingTime=False, numEvals=3):
 #     optimalParams = {}

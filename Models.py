@@ -1,4 +1,4 @@
-from reservoirpy.nodes import Reservoir, Ridge, IPReservoir, FORCE, LMS, RLS
+from reservoirpy.nodes import Reservoir, Ridge, IPReservoir, FORCE, LMS, RLS, Input
 from reservoirpy.utils import verbosity
 verbosity(0)
 
@@ -27,6 +27,14 @@ def createESNForce(**params):
     esn = reservoir >> readout
     return esn
 
+def createIPESNForce(**params):
+    readout = FORCE(output_dim=10, alpha=params['alpha'])
+    del params['alpha']
+    params['units'] = int(params['units'])
+    reservoir = IPReservoir(**params)
+    esn = reservoir >> readout
+    return esn
+
 def createESNLms(**params):
     readout = LMS(output_dim=10, alpha=params['alpha'])
     del params['alpha']
@@ -40,6 +48,14 @@ def createESNRls(**params):
     del params['alpha']
     params['units'] = int(params['units'])
     reservoir = Reservoir(**params)
+    esn = reservoir >> readout
+    return esn
+
+def createIPESNRls(**params):
+    readout = RLS(output_dim=10, alpha=params['alpha'])
+    del params['alpha']
+    params['units'] = int(params['units'])
+    reservoir = IPReservoir(**params)
     esn = reservoir >> readout
     return esn
 
