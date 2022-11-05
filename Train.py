@@ -8,6 +8,7 @@ from bayes_opt import BayesianOptimization
 import torch
 import time
 import traceback
+import json
 
 files = ['s','j','na','l','ni']
 totalGestureNames = ['left','right','forward','backward','bounce up','bounce down','turn left','turn right','shake lr','shake ud', \
@@ -144,8 +145,8 @@ def testModel(params, trainFiles, testFiles, trainFraction=1, startFraction=0, s
                 accuracies.extend(accuracy)
                 break
             except Exception as e:
-                print(e)
-                print(traceback.format_exc())
+                # print(e)
+                # print(traceback.format_exc())
                 continue
     if (len(scores)==0):
         return [0], [0], [], [], []
@@ -172,8 +173,8 @@ def testModel2(params, trainFiles, testFiles, fold, isVal, numEvals=1, modelCrea
                 accuracies.extend(accuracy)
                 break
             except Exception as e:
-                print(e)
-                print(traceback.format_exc())
+                # print(e)
+                # print(traceback.format_exc())
                 continue
     if (len(scores)==0):
         return [0], [0], [], [], []
@@ -212,7 +213,7 @@ def optimizer_global1(pbounds, modelCreator=createESN, trainFunc=trainESN, numEv
             init_points=15,
             n_iter=15,
         )
-        s, a, target, pred, trainingTimes = testModel(optimizer.max['params'], inputFiles, testFiles, 1, 0, 1, 20, modelCreator, trainFunc)
+        s, a, target, pred, trainingTimes = testModel(optimizer.max['params'], inputFiles, testFiles, 1, 0, 1, 10, modelCreator, trainFunc)
         optimalParams[testFiles[0]]=optimizer.max['params']
         print(testFiles, np.array(s).mean(), np.array(s).std(), np.array(a).mean(), np.array(a).std())
         f1Scores+=s
@@ -225,7 +226,7 @@ def optimizer_global1(pbounds, modelCreator=createESN, trainFunc=trainESN, numEv
     return optimalParams
 
 def optimizer_user(pbounds, modelCreator, trainFunc, numEvals=3):
-    files = ['j', 'na','l','ni', 's']
+    files = ['s', 'j', 'na','l','ni']
     optimalParams = {}
     f1Scores = {}
     accuracies = {}
@@ -238,13 +239,20 @@ def optimizer_user(pbounds, modelCreator, trainFunc, numEvals=3):
         testFiles = [files[idx]]
         
         for i in range(nFolds):
+            json.dump({'found': False}, open("temp.json", "w"))
             def black_box_function(**params):
                 try:
+                    data = json.load(open('temp.json'))
+                    found = data['found']
+                    if found: 
+                        return -0.01
                     scores, _, _, _, _ = testModel2(params, trainFiles, testFiles, i, True, numEvals, modelCreator, trainFunc)
                     f1 = np.array(scores).mean()
+                    if f1>0.999:
+                        json.dump({'found': True}, open("temp.json", "w"))
                     return f1
                 except:
-                    print(traceback.format_exc())
+                    # print(traceback.format_exc())
                     return -0.01
 
             optimizer = BayesianOptimization(
@@ -257,10 +265,12 @@ def optimizer_user(pbounds, modelCreator, trainFunc, numEvals=3):
                 n_iter=15,
             )
             s, a, _, _, trainingTimes = testModel2(optimizer.max['params'], trainFiles, testFiles, i, False, 10, modelCreator, trainFunc)
+            print(np.array(s).mean(), np.array(s).std())
             optimalParams[testFiles[0]]=optimizer.max['params']
             f1Scores[testFiles[0]].extend(s)
             accuracies[testFiles[0]].extend(a)
             times.extend(trainingTimes)
+        print(np.array(f1Scores[testFiles[0]]).mean(), np.array(f1Scores[testFiles[0]]).std())
     for key in list(f1Scores.keys()):
         scores = f1Scores[key]
         acc = accuracies[key]
@@ -303,6 +313,10 @@ def optimizer_global2(pbounds, modelCreator, trainFunc, numEvals=3):
             f1Scores[eachFile].extend(subjectScores)
             accuracies[eachFile].extend(subjectAccuracies)
             times.extend(trainingTimes)
+        for key in list(f1Scores.keys()):
+            scores = f1Scores[key]
+            acc = accuracies[key]
+            print(np.array(scores).mean(), np.array(scores).std(), np.array(acc).mean(), np.array(acc).std())
     for key in list(f1Scores.keys()):
         scores = f1Scores[key]
         acc = accuracies[key]
