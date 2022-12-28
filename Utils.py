@@ -8,6 +8,7 @@ import matplotlib.pyplot as plt
 import time
 import statistics
 import sklearn
+import pickle
 
 
 totalGestureNames = ['left','right','forward','backward','bounce up','bounce down','turn left','turn right','shake lr','shake ud', \
@@ -69,35 +70,48 @@ def getData(loader):
 # Behavoir Space Utilities
 def rollingWindow(data, windowSize=50):
     rollingData = []
+    print(data.shape)
     for i in range(windowSize, data.shape[0]):
         rollingData.append(data[i-windowSize:i])
     return np.array(rollingData[:len(rollingData)//2])
+
+def sampleCollector(x, y):
+    samplesX = [[]]
+    samplesY = [[]]
+    prevLabel = np.array([0]*10)
+    for index, sample in enumerate(y):
+        if (sample==prevLabel).all():
+            samplesX[-1].append(x[index])
+            samplesY[-1].append(sample)
+        else:
+            prevLabel = sample
+            samplesX.append([x[index]])
+            samplesY.append([sample])
+    return samplesX
 
 def calculateSeperability(params, creator, testSet):
     reservoir = creator(**params)
     trainset, testset, trainloader, testloader = createData(inputFiles=testSet, testFiles=['ni'])
     x, y = getData(trainloader)
-    # x = x[:x.shape[0]-x.shape[0]%20,]
-    inputs = rollingWindow(x)
-    matrix = np.ndarray((reservoir.units, inputs.shape[0]))
-    for i in range(inputs.shape[0]):
-        pred = reservoir.run(inputs[i])[-1]
+    x2 = sampleCollector(x, y)
+    matrix = np.ndarray((reservoir.units, len(x2)))
+    for i in range(len(x2)):
+        pred = reservoir.run(np.array(x2[i]))[-1]
         matrix[:, i] = pred
-    return np.linalg.matrix_rank(np.matrix.transpose(matrix))
+    return np.linalg.matrix_rank(np.matrix.transpose(matrix), tol=1)
 
 def calculateGeneralization(params, creator, testSet):
     reservoir = creator(**params)
     trainset, testset, trainloader, testloader = createData(inputFiles=testSet, testFiles=['ni'])
     x, y = getData(trainloader)
-    # x = x[:x.shape[0]-x.shape[0]%20,]
-    inputs = rollingWindow(x)
-    noise = np.random.rand(*inputs.shape)*0.1
-    inputs = inputs+noise
-    matrix = np.ndarray((reservoir.units, inputs.shape[0]))
-    for i in range(inputs.shape[0]):
-        pred = reservoir.run(inputs[i])[-1]
+    x2 = sampleCollector(x, y)
+    matrix = np.ndarray((reservoir.units, len(x2)))
+    for i in range(len(x2)):
+        input = np.array(x2[i])
+        noise = np.random.rand(*input.shape)*0.1
+        pred = reservoir.run(input+noise)[-1]
         matrix[:, i] = pred
-    return np.linalg.matrix_rank(matrix)
+    return np.linalg.matrix_rank(np.matrix.transpose(matrix), tol=3)
 
 def memoryCapacity(params, creator, numInputs=1, trainSize = 5000):
     reservoir = creator(**params)
@@ -127,13 +141,16 @@ def getBehaviourSpace(reservoirs):
     mc = []
     scores = []
     for reservoirParams in reservoirs:
-        print("GETTING BEHAVIOR SPACE")
         score = reservoirParams['score']
         scores.append(score)
         creator = reservoirParams['creator']
         seperability.append(calculateSeperability(reservoirParams['params'], creator, reservoirParams['testSet']))
         generalizability.append(calculateGeneralization(reservoirParams['params'], creator, reservoirParams['testSet']))
         mc.append(memoryCapacity(reservoirParams['params'], creator))
+        file = open('behaviorSpace', 'wb')
+        pickle.dump({"seperability": seperability, "generalizability": generalizability, "mc": mc, "scores": scores}, file)
+        file.close()
+        print("Calculated behavior space for model {}, Score: {}, KR: {}, GR: {}, MC: {}".format(len(scores), scores[-1], seperability[-1], generalizability[-1], mc[-1]))
     return seperability, generalizability, mc, scores
 
 def makeGraph(x, y, z, c):
@@ -142,8 +159,8 @@ def makeGraph(x, y, z, c):
     p = ax.scatter(x, y, z, c=c, cmap='viridis', linewidth=0.5)
     ax.set_xlabel('$KR$')
     ax.set_ylabel('$GR$')
-    ax.set_zlabel(r'$MC$')
-    fig.colorbar(p)
+    ax.set_zlabel('$MC$')
+    fig.colorbar(p,ax=[ax],location='left')
     
 def measureTrainingTime(model, trainFunction, params, numEvals=3):
     times = []

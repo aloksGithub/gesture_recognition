@@ -9,6 +9,7 @@ import torch
 import time
 import traceback
 import json
+import pickle
 
 files = ['s','j','na','l','ni']
 totalGestureNames = ['left','right','forward','backward','bounce up','bounce down','turn left','turn right','shake lr','shake ud', \
@@ -325,58 +326,58 @@ def optimizer_global2(pbounds, modelCreator, trainFunc, numEvals=3):
     print("Training time:", sum(times)/len(times), statistics.pstdev(times))
     return optimalParams
 
-# def optimizer(pbounds, modelCreator, trainAndTestModel, confusionMatrix=False, behaviorSpace=False, trainingTime=False, numEvals=3):
-#     optimalParams = {}
-#     f1Scores = []
-#     accuracies = []
-#     targets = np.array([])
-#     preds = np.array([])
-#     p = []
-#     times = []
-#     if modelCreator==createIPESN:
-#         reservoirCreator = createIPReservoir
-#     else:
-#         reservoirCreator = createReservoir
-#     for idx in range(5):
-#         testFiles = files[idx:idx+1]
+def optimizer(pbounds, modelCreator, trainAndTestModel, confusionMatrix=False, behaviorSpace=False, trainingTime=False, numEvals=3):
+    optimalParams = {}
+    f1Scores = []
+    accuracies = []
+    targets = np.array([])
+    preds = np.array([])
+    p = []
+    times = []
+    if modelCreator==createIPESN:
+        reservoirCreator = createIPReservoir
+    else:
+        reservoirCreator = createReservoir
+    for idx in range(5):
+        testFiles = files[idx:idx+1]
 
-#         def black_box_function(**params):
-#             scores, _, _, _, _ = trainAndTestModel(params, idx, numEvals, True)
-#             f1 = np.array(scores).mean()
-#             return f1
+        def black_box_function(**params):
+            scores, _, _, _, _ = trainAndTestModel(params, idx, numEvals, True)
+            f1 = np.array(scores).mean()
+            return f1
 
-#         optimizer = BayesianOptimization(
-#             f=black_box_function,
-#             pbounds=pbounds,
-#         )
+        optimizer = BayesianOptimization(
+            f=black_box_function,
+            pbounds=pbounds,
+        )
 
-#         optimizer.maximize(
-#             init_points=15,
-#             n_iter=15,
-#         )
-#         s, a, target, pred, userTimes = trainAndTestModel(optimizer.max['params'], idx, 20, False)
-#         optimalParams[testFiles[0]]=optimizer.max['params']
-#         for score, params in zip(optimizer._space._target, optimizer._space._params):
-#             params = optimizer._space.array_to_params(params)
-#             del params['ridge']
-#             params['units'] = int(params['units'])
-#             p.append({'params':params, 'score': score, 'creator':reservoirCreator, 'testSet': testFiles})
-#         print(s, a)
-#         print(testFiles, np.array(s).mean(), np.array(s).std(), np.array(a).mean(), np.array(a).std())
-#         f1Scores+=s
-#         accuracies+=a
-#         targets = np.append(targets, target)
-#         preds = np.append(preds, pred)
-#         times.extend(userTimes)
-#     print(np.array(f1Scores).mean(), np.array(f1Scores).std(), np.array(accuracies).mean(), np.array(accuracies).std())
-#     if confusionMatrix:
-#         makeConfusionMatrix(targets, preds)
-#     if trainingTime:
-#         print("Training time:", sum(times)/len(times), statistics.pstdev(times))
-#     if behaviorSpace:
-#         x, y, c, z = getBehaviourSpace(p)
-#         makeGraph(x, y, c, z)
-#     return optimalParams
+        optimizer.maximize(
+            init_points=15,
+            n_iter=15,
+        )
+        s, a, target, pred, userTimes = trainAndTestModel(optimizer.max['params'], idx, 20, False)
+        optimalParams[testFiles[0]]=optimizer.max['params']
+        for score, params in zip(optimizer._space._target, optimizer._space._params):
+            params = optimizer._space.array_to_params(params)
+            del params['ridge']
+            params['units'] = int(params['units'])
+            p.append({'params':params, 'score': score, 'creator':reservoirCreator, 'testSet': testFiles})
+        print(s, a)
+        print(testFiles, np.array(s).mean(), np.array(s).std(), np.array(a).mean(), np.array(a).std())
+        f1Scores+=s
+        accuracies+=a
+        targets = np.append(targets, target)
+        preds = np.append(preds, pred)
+        times.extend(userTimes)
+    print(np.array(f1Scores).mean(), np.array(f1Scores).std(), np.array(accuracies).mean(), np.array(accuracies).std())
+    if confusionMatrix:
+        makeConfusionMatrix(targets, preds)
+    if trainingTime:
+        print("Training time:", sum(times)/len(times), statistics.pstdev(times))
+    if behaviorSpace:
+        x, y, c, z = getBehaviourSpace(p)
+        makeGraph(x, y, c, z)
+    return optimalParams
 
 # def optimizer_global1(pbounds, modelCreator, trainFunc, confusionMatrix=False, behaviorSpace=False, trainingTime=False, numEvals=3):
 #     def trainAndTestModel(params, idx, numEvals, isVal):
@@ -542,3 +543,64 @@ def optimizer_global2(pbounds, modelCreator, trainFunc, numEvals=3):
 #     if behaviorSpace:
 #         x, y, c, z = getBehaviourSpace(p)
 #         makeGraph(x, y, c, z)
+
+def optimizer_global1_bs(pbounds, modelCreator=createESN, trainFunc=trainESN, numEvals=3):
+    files = ['j','s','na','l','ni']
+    optimalParams = {}
+    f1Scores = []
+    accuracies = []
+    targets = np.array([])
+    preds = np.array([])
+    times = []
+    p = []
+    if modelCreator==createIPESN:
+        reservoirCreator = createIPReservoir
+    else:
+        reservoirCreator = createReservoir
+    for idx in range(5):
+        inputFiles = files[:idx] + files[idx+1:]
+        validationFiles = [inputFiles[idx%4]]
+        trainFiles = inputFiles[:idx%4] + inputFiles[idx%4+1:]
+        testFiles = files[idx:idx+1]
+        print(inputFiles, trainFiles, validationFiles, testFiles)
+
+        def black_box_function(**params):
+            try:
+                scores1, _, _, _, _ = testModel(params, trainFiles, validationFiles, 1, 0, 1, numEvals, modelCreator, trainFunc)
+                f1 = np.array(scores1).mean()
+                return f1
+            except:
+                print(traceback.format_exc())
+                return -0.01
+
+        optimizer = BayesianOptimization(
+            f=black_box_function,
+            pbounds=pbounds,
+        )
+
+        optimizer.maximize(
+            init_points=25,
+            n_iter=25,
+        )
+        s, a, target, pred, trainingTimes = testModel(optimizer.max['params'], inputFiles, testFiles, 1, 0, 1, 1, modelCreator, trainFunc)
+        for score, params in zip(optimizer._space._target, optimizer._space._params):
+            params = optimizer._space.array_to_params(params)
+            del params['ridge']
+            params['units'] = int(params['units'])
+            p.append({'params':params, 'score': score, 'creator':reservoirCreator, 'testSet': testFiles})
+        optimalParams[testFiles[0]]=optimizer.max['params']
+        print(testFiles, np.array(s).mean(), np.array(s).std(), np.array(a).mean(), np.array(a).std())
+        f1Scores+=s
+        accuracies+=a
+        targets = np.append(targets, target)
+        preds = np.append(preds, pred)
+        times.extend(trainingTimes)
+    print(np.array(f1Scores).mean(), np.array(f1Scores).std(), np.array(accuracies).mean(), np.array(accuracies).std())
+    print("Training time:", sum(times)/len(times), statistics.pstdev(times))
+    makeConfusionMatrix(targets, preds)
+    file = open('modelParams', 'wb')
+    pickle.dump(p, file)
+    file.close()
+    x, y, c, z = getBehaviourSpace(p)
+    makeGraph(x, y, c, z)
+    return optimalParams
