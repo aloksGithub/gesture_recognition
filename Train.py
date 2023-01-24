@@ -1,3 +1,4 @@
+import math
 import Evaluation
 import numpy as np 
 import matplotlib.pyplot as plt
@@ -10,6 +11,7 @@ import time
 import traceback
 import json
 import pickle
+from sklearn.metrics import mean_squared_error
 
 files = ['s','j','na','l','ni']
 totalGestureNames = ['left','right','forward','backward','bounce up','bounce down','turn left','turn right','shake lr','shake ud', \
@@ -105,6 +107,7 @@ def trainESN4(trainloader, esn, fold, isVal):
 def testESN(esn, testFiles, startFraction=0, stopFraction=1, fixed_threshold=0.4):
     testF1MaxApps = []
     testAccuracies = []
+    errors = []
     
     _, _, trainloader, testloader = createData(inputFiles=testFiles, testFiles=testFiles)
 
@@ -114,6 +117,7 @@ def testESN(esn, testFiles, startFraction=0, stopFraction=1, fixed_threshold=0.4
         inputs = inputs[int(inputs.shape[0]*startFraction):int(inputs.shape[0]*stopFraction)].numpy()
         targets = targets[int(targets.shape[0]*startFraction):int(targets.shape[0]*stopFraction)].numpy()
         prediction = esn.run(inputs)
+        errors.append(mean_squared_error(targets, prediction))
 
         t_target = targets
         threshold = np.ones((prediction.shape[0],1))*fixed_threshold
@@ -123,11 +127,12 @@ def testESN(esn, testFiles, startFraction=0, stopFraction=1, fixed_threshold=0.4
         pred_MaxApp, targ_MaxApp = Evaluation.calcInputSegmentSeries(t_maxApp_prediction, t_target, 0.5)
         testF1MaxApps.append(np.mean(sklearn.metrics.f1_score(targ_MaxApp,pred_MaxApp,average=None)))
         testAccuracies.append(np.mean(sklearn.metrics.accuracy_score(targ_MaxApp,pred_MaxApp)))
-    return testF1MaxApps, testAccuracies, targ_MaxApp, pred_MaxApp
+    return testF1MaxApps, testAccuracies, errors, targ_MaxApp, pred_MaxApp
 
 def testModel(params, trainFiles, testFiles, trainFraction=1, startFraction=0, stopFraction=1, numEvals=1, modelCreator=createESN, trainFunc=trainESN):
     scores = []
     accuracies = []
+    errors = []
     targets = np.array([])
     preds = np.array([])
     times = []
@@ -139,7 +144,8 @@ def testModel(params, trainFiles, testFiles, trainFraction=1, startFraction=0, s
                 start = time.time()
                 trainFunc(trainloader, esn, trainFraction)
                 times.append(time.time()-start)
-                score, accuracy, target, pred = testESN(esn, testFiles, startFraction, stopFraction)
+                score, accuracy, mse, target, pred = testESN(esn, testFiles, startFraction, stopFraction)
+                errors.append(mse)
                 targets = np.append(targets, target)
                 preds = np.append(preds, pred)
                 scores.extend(score)
@@ -150,24 +156,26 @@ def testModel(params, trainFiles, testFiles, trainFraction=1, startFraction=0, s
                 # print(traceback.format_exc())
                 continue
     if (len(scores)==0):
-        return [0], [0], [], [], []
-    return (scores, accuracies, targets, preds, times)
+        return [0], [0], [10000000], [], [], []
+    return (scores, accuracies, errors, targets, preds, times)
 
 def testModel2(params, trainFiles, testFiles, fold, isVal, numEvals=1, modelCreator=createESN, trainFunc=trainESN3):
     scores = []
     accuracies = []
+    errors = []
     targets = np.array([])
     preds = np.array([])
     times = []
     for _ in range(numEvals):
-        _, _, trainloader, _ = createData(inputFiles=trainFiles, testFiles=testFiles)
-        esn = modelCreator(**params)
         for i in range(5):
             try:
+                _, _, trainloader, _ = createData(inputFiles=trainFiles, testFiles=testFiles)
+                esn = modelCreator(**params)
                 start = time.time()
                 trainFunc(trainloader, esn, fold, isVal)
                 times.append(time.time()-start)
-                score, accuracy, target, pred = testESN(esn, testFiles, fold/nFolds, (fold+1)/nFolds)
+                score, accuracy, mse, target, pred = testESN(esn, testFiles, fold/nFolds, (fold+1)/nFolds)
+                errors.append(mse)
                 targets = np.append(targets, target)
                 preds = np.append(preds, pred)
                 scores.extend(score)
@@ -179,44 +187,58 @@ def testModel2(params, trainFiles, testFiles, fold, isVal, numEvals=1, modelCrea
                 continue
     if (len(scores)==0):
         return [0], [0], [], [], []
-    return (scores, accuracies, targets, preds, times)
+    return (scores, accuracies, errors, targets, preds, times)
+
+def multi_run_wrapper_global1(args):
+   return global1_task(*args)
+
+def global1_task(idx, pbounds, modelCreator=createESN, trainFunc=trainESN, numEvals=3):
+    inputFiles = files[:idx] + files[idx+1:]
+    validationFiles = [inputFiles[idx%4]]
+    trainFiles = inputFiles[:idx%4] + inputFiles[idx%4+1:]
+    testFiles = files[idx:idx+1]
+    print(inputFiles, trainFiles, validationFiles, testFiles)
+
+    def black_box_function(**params):
+        try:
+            scores1, _, _, _, _, _ = testModel(params, trainFiles, validationFiles, 1, 0, 1, numEvals, modelCreator, trainFunc)
+            f1 = np.array(scores1).mean()
+            return f1
+        except:
+            print(traceback.format_exc())
+            return -0.01
+
+    optimizer = BayesianOptimization(
+        f=black_box_function,
+        pbounds=pbounds,
+    )
+
+    optimizer.maximize(
+        init_points=1,
+        n_iter=1,
+    )
+    s, a, _, target, pred, trainingTimes = testModel(optimizer.max['params'], inputFiles, testFiles, 1, 0, 1, 2, modelCreator, trainFunc)
+    print(testFiles, np.array(s).mean(), np.array(s).std(), np.array(a).mean(), np.array(a).std())
+    return idx, s, a, target, pred, trainingTimes, optimizer.max['params']
 
 def optimizer_global1(pbounds, modelCreator=createESN, trainFunc=trainESN, numEvals=3):
-    files = ['j','s','na','l','ni']
     optimalParams = {}
     f1Scores = []
     accuracies = []
     targets = np.array([])
     preds = np.array([])
     times = []
-    for idx in range(5):
-        inputFiles = files[:idx] + files[idx+1:]
-        validationFiles = [inputFiles[idx%4]]
-        trainFiles = inputFiles[:idx%4] + inputFiles[idx%4+1:]
-        testFiles = files[idx:idx+1]
-        print(inputFiles, trainFiles, validationFiles, testFiles)
+    pool = MyPool()
 
-        def black_box_function(**params):
-            try:
-                scores1, _, _, _, _ = testModel(params, trainFiles, validationFiles, 1, 0, 1, numEvals, modelCreator, trainFunc)
-                f1 = np.array(scores1).mean()
-                return f1
-            except:
-                print(traceback.format_exc())
-                return -0.01
+    results = pool.map(multi_run_wrapper_global1, [(idx, pbounds, modelCreator, trainFunc, numEvals) for idx in range(5)])
 
-        optimizer = BayesianOptimization(
-            f=black_box_function,
-            pbounds=pbounds,
-        )
-
-        optimizer.maximize(
-            init_points=15,
-            n_iter=15,
-        )
-        s, a, target, pred, trainingTimes = testModel(optimizer.max['params'], inputFiles, testFiles, 1, 0, 1, 10, modelCreator, trainFunc)
-        optimalParams[testFiles[0]]=optimizer.max['params']
-        print(testFiles, np.array(s).mean(), np.array(s).std(), np.array(a).mean(), np.array(a).std())
+    pool.close()
+    pool.join()
+    
+    for result in results:
+        idx, s, a, target, pred, trainingTimes, bestParams = result
+        optimalParams[files[idx]]=bestParams
+        print(files[idx], np.array(s).mean(), np.array(s).std(), np.array(a).mean(), np.array(a).std())
         f1Scores+=s
         accuracies+=a
         targets = np.append(targets, target)
@@ -247,7 +269,7 @@ def optimizer_user(pbounds, modelCreator, trainFunc, numEvals=3):
                     found = data['found']
                     if found: 
                         return -0.01
-                    scores, _, _, _, _ = testModel2(params, trainFiles, testFiles, i, True, numEvals, modelCreator, trainFunc)
+                    scores, _, _, _, _, _ = testModel2(params, trainFiles, testFiles, i, True, numEvals, modelCreator, trainFunc)
                     f1 = np.array(scores).mean()
                     if f1>0.999:
                         json.dump({'found': True}, open("temp.json", "w"))
@@ -265,7 +287,7 @@ def optimizer_user(pbounds, modelCreator, trainFunc, numEvals=3):
                 init_points=15,
                 n_iter=15,
             )
-            s, a, _, _, trainingTimes = testModel2(optimizer.max['params'], trainFiles, testFiles, i, False, 10, modelCreator, trainFunc)
+            s, a, _, _, _, trainingTimes = testModel2(optimizer.max['params'], trainFiles, testFiles, i, False, 10, modelCreator, trainFunc)
             print(np.array(s).mean(), np.array(s).std())
             optimalParams[testFiles[0]]=optimizer.max['params']
             f1Scores[testFiles[0]].extend(s)
@@ -293,7 +315,7 @@ def optimizer_global2(pbounds, modelCreator, trainFunc, numEvals=3):
     for i in range(nFolds):
         def black_box_function(**params):
             try:
-                scores, _, _, _, _ = testModel2(params, files, files, i, True, numEvals, modelCreator, trainFunc)
+                scores, _, _, _, _, _ = testModel2(params, files, files, i, True, numEvals, modelCreator, trainFunc)
                 f1 = np.array(scores).mean()
                 return f1
             except:
@@ -310,7 +332,7 @@ def optimizer_global2(pbounds, modelCreator, trainFunc, numEvals=3):
             n_iter=15,
         )
         for eachFile in files:
-            subjectScores, subjectAccuracies, target, pred, trainingTimes = testModel2(optimizer.max['params'], files, [eachFile], i, False, 10, modelCreator, trainFunc)
+            subjectScores, subjectAccuracies, _, target, pred, trainingTimes = testModel2(optimizer.max['params'], files, [eachFile], i, False, 10, modelCreator, trainFunc)
             f1Scores[eachFile].extend(subjectScores)
             accuracies[eachFile].extend(subjectAccuracies)
             times.extend(trainingTimes)
@@ -566,12 +588,12 @@ def optimizer_global1_bs(pbounds, modelCreator=createESN, trainFunc=trainESN, nu
 
         def black_box_function(**params):
             try:
-                scores1, _, _, _, _ = testModel(params, trainFiles, validationFiles, 1, 0, 1, numEvals, modelCreator, trainFunc)
-                f1 = np.array(scores1).mean()
-                return f1
+                _, _, e, _, _, _ = testModel(params, trainFiles, validationFiles, 1, 0, 1, numEvals, modelCreator, trainFunc)
+                error = np.array(e).mean()
+                return 1/error
             except:
                 print(traceback.format_exc())
-                return -0.01
+                return 0
 
         optimizer = BayesianOptimization(
             f=black_box_function,
@@ -579,15 +601,15 @@ def optimizer_global1_bs(pbounds, modelCreator=createESN, trainFunc=trainESN, nu
         )
 
         optimizer.maximize(
-            init_points=25,
-            n_iter=25,
+            init_points=100,
+            n_iter=100,
         )
-        s, a, target, pred, trainingTimes = testModel(optimizer.max['params'], inputFiles, testFiles, 1, 0, 1, 1, modelCreator, trainFunc)
+        s, a, e, target, pred, trainingTimes = testModel(optimizer.max['params'], inputFiles, testFiles, 1, 0, 1, 1, modelCreator, trainFunc)
         for score, params in zip(optimizer._space._target, optimizer._space._params):
             params = optimizer._space.array_to_params(params)
             del params['ridge']
             params['units'] = int(params['units'])
-            p.append({'params':params, 'score': score, 'creator':reservoirCreator, 'testSet': testFiles})
+            p.append({'params':params, 'error': 1/score, 'creator':reservoirCreator, 'testSet': testFiles})
         optimalParams[testFiles[0]]=optimizer.max['params']
         print(testFiles, np.array(s).mean(), np.array(s).std(), np.array(a).mean(), np.array(a).std())
         f1Scores+=s
@@ -597,8 +619,8 @@ def optimizer_global1_bs(pbounds, modelCreator=createESN, trainFunc=trainESN, nu
         times.extend(trainingTimes)
     print(np.array(f1Scores).mean(), np.array(f1Scores).std(), np.array(accuracies).mean(), np.array(accuracies).std())
     print("Training time:", sum(times)/len(times), statistics.pstdev(times))
-    makeConfusionMatrix(targets, preds)
-    file = open('modelParams', 'wb')
+    # makeConfusionMatrix(targets, preds)
+    file = open('logs/modelParams_{}'.format(math.floor(time.time())), 'wb')
     pickle.dump(p, file)
     file.close()
     x, y, c, z = getBehaviourSpace(p)

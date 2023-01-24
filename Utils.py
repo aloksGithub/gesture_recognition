@@ -1,3 +1,4 @@
+import math
 import numpy as np 
 import Evaluation
 import random
@@ -89,7 +90,7 @@ def sampleCollector(x, y):
             samplesY.append([sample])
     return samplesX
 
-def calculateSeperability(params, creator, testSet):
+def calculateSeparability(params, creator, testSet):
     reservoir = creator(**params)
     trainset, testset, trainloader, testloader = createData(inputFiles=testSet, testFiles=['ni'])
     x, y = getData(trainloader)
@@ -98,9 +99,9 @@ def calculateSeperability(params, creator, testSet):
     for i in range(len(x2)):
         pred = reservoir.run(np.array(x2[i]))[-1]
         matrix[:, i] = pred
-    return np.linalg.matrix_rank(np.matrix.transpose(matrix), tol=1)
+    return np.linalg.matrix_rank(np.matrix.transpose(matrix), tol=3)
 
-def calculateGeneralization(params, creator, testSet):
+def calculateGeneralization(params, creator, testSet, noiseLevel=0.4):
     reservoir = creator(**params)
     trainset, testset, trainloader, testloader = createData(inputFiles=testSet, testFiles=['ni'])
     x, y = getData(trainloader)
@@ -108,7 +109,7 @@ def calculateGeneralization(params, creator, testSet):
     matrix = np.ndarray((reservoir.units, len(x2)))
     for i in range(len(x2)):
         input = np.array(x2[i])
-        noise = np.random.rand(*input.shape)*0.1
+        noise = np.random.rand(*input.shape)*noiseLevel
         pred = reservoir.run(input+noise)[-1]
         matrix[:, i] = pred
     return np.linalg.matrix_rank(np.matrix.transpose(matrix), tol=3)
@@ -126,7 +127,7 @@ def memoryCapacity(params, creator, numInputs=1, trainSize = 5000):
         try:
             esn.fit(inputs, targets)
         except:
-            print("Failed to train a model")
+            pass
         newRandomSeries = np.random.rand(trainSize+i, numInputs)
         preds = np.squeeze(esn.run(newRandomSeries)[i:])
         cov = abs(np.cov(np.squeeze(newRandomSeries[0:trainSize]), preds)[0, -1])
@@ -136,22 +137,22 @@ def memoryCapacity(params, creator, numInputs=1, trainSize = 5000):
     return capacity
 
 def getBehaviourSpace(reservoirs):
-    seperability = []
+    separability = []
     generalizability = []
     mc = []
-    scores = []
+    errors = []
     for reservoirParams in reservoirs:
-        score = reservoirParams['score']
-        scores.append(score)
+        error = reservoirParams['error']
+        errors.append(error)
         creator = reservoirParams['creator']
-        seperability.append(calculateSeperability(reservoirParams['params'], creator, reservoirParams['testSet']))
+        separability.append(calculateSeparability(reservoirParams['params'], creator, reservoirParams['testSet']))
         generalizability.append(calculateGeneralization(reservoirParams['params'], creator, reservoirParams['testSet']))
         mc.append(memoryCapacity(reservoirParams['params'], creator))
-        file = open('behaviorSpace', 'wb')
-        pickle.dump({"seperability": seperability, "generalizability": generalizability, "mc": mc, "scores": scores}, file)
-        file.close()
-        print("Calculated behavior space for model {}, Score: {}, KR: {}, GR: {}, MC: {}".format(len(scores), scores[-1], seperability[-1], generalizability[-1], mc[-1]))
-    return seperability, generalizability, mc, scores
+        print(len(errors))
+    file = open('logs/behaviorSpace_{}'.format(math.floor(time.time())), 'wb')
+    pickle.dump({"separability": separability, "generalizability": generalizability, "mc": mc, "errors": errors}, file)
+    file.close()
+    return separability, generalizability, mc, errors
 
 def makeGraph(x, y, z, c):
     fig = plt.figure()
