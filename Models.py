@@ -1,4 +1,4 @@
-from reservoirpy.nodes import Reservoir, Ridge, IPReservoir, FORCE, LMS, RLS, Input
+from reservoirpy.nodes import Reservoir, Ridge, IPReservoir, FORCE, LMS, RLS, Input, NVAR
 from reservoirpy.utils import verbosity
 verbosity(0)
 
@@ -58,6 +58,13 @@ def createIPESNRls(**params):
     reservoir = IPReservoir(**params)
     esn = reservoir >> readout
     return esn
+
+def createNVAR(**params):
+    readout = Ridge(output_dim=10, ridge=params['ridge'])
+    del params['ridge']
+    nvar = NVAR(delay=int(params['delay']), order=2, strides=int(params['strides']))
+    model = nvar >> readout
+    return model
 
 def createReservoir(**params):
     params['units'] = int(params['units'])

@@ -152,8 +152,7 @@ def testModel(params, trainFiles, testFiles, trainFraction=1, startFraction=0, s
                 accuracies.extend(accuracy)
                 break
             except Exception as e:
-                # print(e)
-                # print(traceback.format_exc())
+                print(traceback.format_exc())
                 continue
     if (len(scores)==0):
         return [0], [0], [10000000], [], [], []
@@ -182,44 +181,11 @@ def testModel2(params, trainFiles, testFiles, fold, isVal, numEvals=1, modelCrea
                 accuracies.extend(accuracy)
                 break
             except Exception as e:
-                # print(e)
-                # print(traceback.format_exc())
+                print(traceback.format_exc())
                 continue
     if (len(scores)==0):
-        return [0], [0], [], [], []
+        return [0], [0], [], [], [], []
     return (scores, accuracies, errors, targets, preds, times)
-
-def multi_run_wrapper_global1(args):
-   return global1_task(*args)
-
-def global1_task(idx, pbounds, modelCreator=createESN, trainFunc=trainESN, numEvals=3):
-    inputFiles = files[:idx] + files[idx+1:]
-    validationFiles = [inputFiles[idx%4]]
-    trainFiles = inputFiles[:idx%4] + inputFiles[idx%4+1:]
-    testFiles = files[idx:idx+1]
-    print(inputFiles, trainFiles, validationFiles, testFiles)
-
-    def black_box_function(**params):
-        try:
-            scores1, _, _, _, _, _ = testModel(params, trainFiles, validationFiles, 1, 0, 1, numEvals, modelCreator, trainFunc)
-            f1 = np.array(scores1).mean()
-            return f1
-        except:
-            print(traceback.format_exc())
-            return -0.01
-
-    optimizer = BayesianOptimization(
-        f=black_box_function,
-        pbounds=pbounds,
-    )
-
-    optimizer.maximize(
-        init_points=1,
-        n_iter=1,
-    )
-    s, a, _, target, pred, trainingTimes = testModel(optimizer.max['params'], inputFiles, testFiles, 1, 0, 1, 2, modelCreator, trainFunc)
-    print(testFiles, np.array(s).mean(), np.array(s).std(), np.array(a).mean(), np.array(a).std())
-    return idx, s, a, target, pred, trainingTimes, optimizer.max['params']
 
 def optimizer_global1(pbounds, modelCreator=createESN, trainFunc=trainESN, numEvals=3):
     optimalParams = {}
@@ -228,17 +194,35 @@ def optimizer_global1(pbounds, modelCreator=createESN, trainFunc=trainESN, numEv
     targets = np.array([])
     preds = np.array([])
     times = []
-    pool = MyPool()
+    for idx in range(5):
+        inputFiles = files[:idx] + files[idx+1:]
+        validationFiles = [inputFiles[idx%4]]
+        trainFiles = inputFiles[:idx%4] + inputFiles[idx%4+1:]
+        testFiles = files[idx:idx+1]
+        print(inputFiles, trainFiles, validationFiles, testFiles)
+        
+        def black_box_function(**params):
+            try:
+                scores1, _, _, _, _, _ = testModel(params, trainFiles, validationFiles, 1, 0, 1, numEvals, modelCreator, trainFunc)
+                f1 = np.array(scores1).mean()
+                return f1
+            except:
+                print(traceback.format_exc())
+                return -0.01
 
-    results = pool.map(multi_run_wrapper_global1, [(idx, pbounds, modelCreator, trainFunc, numEvals) for idx in range(5)])
-
-    pool.close()
-    pool.join()
-    
-    for result in results:
-        idx, s, a, target, pred, trainingTimes, bestParams = result
-        optimalParams[files[idx]]=bestParams
-        print(files[idx], np.array(s).mean(), np.array(s).std(), np.array(a).mean(), np.array(a).std())
+        optimizer = BayesianOptimization(
+            f=black_box_function,
+            pbounds=pbounds,
+        )
+        
+        optimizer.maximize(
+            init_points=15,
+            n_iter=15,
+        )
+        
+        s, a, _, target, pred, trainingTimes = testModel(optimizer.max['params'], inputFiles, testFiles, 1, 0, 1, 10, modelCreator, trainFunc)
+        optimalParams[testFiles[0]]=optimizer.max['params']
+        print(testFiles, np.array(s).mean(), np.array(s).std(), np.array(a).mean(), np.array(a).std())
         f1Scores+=s
         accuracies+=a
         targets = np.append(targets, target)
@@ -246,6 +230,7 @@ def optimizer_global1(pbounds, modelCreator=createESN, trainFunc=trainESN, numEv
         times.extend(trainingTimes)
     print(np.array(f1Scores).mean(), np.array(f1Scores).std(), np.array(accuracies).mean(), np.array(accuracies).std())
     print("Training time:", sum(times)/len(times), statistics.pstdev(times))
+    makeConfusionMatrix(targets, preds)
     return optimalParams
 
 def optimizer_user(pbounds, modelCreator, trainFunc, numEvals=3):
@@ -254,6 +239,8 @@ def optimizer_user(pbounds, modelCreator, trainFunc, numEvals=3):
     f1Scores = {}
     accuracies = {}
     times = []
+    targets = np.array([])
+    preds = np.array([])
     for eachFile in files:
         f1Scores[eachFile] = []
         accuracies[eachFile] = []
@@ -275,7 +262,7 @@ def optimizer_user(pbounds, modelCreator, trainFunc, numEvals=3):
                         json.dump({'found': True}, open("temp.json", "w"))
                     return f1
                 except:
-                    # print(traceback.format_exc())
+                    print(traceback.format_exc())
                     return -0.01
 
             optimizer = BayesianOptimization(
@@ -287,7 +274,9 @@ def optimizer_user(pbounds, modelCreator, trainFunc, numEvals=3):
                 init_points=15,
                 n_iter=15,
             )
-            s, a, _, _, _, trainingTimes = testModel2(optimizer.max['params'], trainFiles, testFiles, i, False, 10, modelCreator, trainFunc)
+            s, a, _, target, pred, trainingTimes = testModel2(optimizer.max['params'], trainFiles, testFiles, i, False, 10, modelCreator, trainFunc)
+            targets = np.append(targets, target)
+            preds = np.append(preds, pred)
             print(np.array(s).mean(), np.array(s).std())
             optimalParams[testFiles[0]]=optimizer.max['params']
             f1Scores[testFiles[0]].extend(s)
@@ -300,6 +289,7 @@ def optimizer_user(pbounds, modelCreator, trainFunc, numEvals=3):
         print("{} f1 score: {} ({}), accuracy: {}, ({})".format(key, np.array(scores).mean(), np.array(scores).std(), np.array(acc).mean(), np.array(acc).std()))
     print(np.concatenate(list(f1Scores.values())).mean(), np.concatenate(list(f1Scores.values())).std(), np.concatenate(list(accuracies.values())).mean(), np.concatenate(list(accuracies.values())).std())
     print("Training time:", sum(times)/len(times), statistics.pstdev(times))
+    makeConfusionMatrix(targets, preds)
     return optimalParams
 
 def optimizer_global2(pbounds, modelCreator, trainFunc, numEvals=3):

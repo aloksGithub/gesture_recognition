@@ -71,7 +71,6 @@ def getData(loader):
 # Behavoir Space Utilities
 def rollingWindow(data, windowSize=50):
     rollingData = []
-    print(data.shape)
     for i in range(windowSize, data.shape[0]):
         rollingData.append(data[i-windowSize:i])
     return np.array(rollingData[:len(rollingData)//2])
@@ -99,7 +98,15 @@ def calculateSeparability(params, creator, testSet):
     for i in range(len(x2)):
         pred = reservoir.run(np.array(x2[i]))[-1]
         matrix[:, i] = pred
-    return np.linalg.matrix_rank(np.matrix.transpose(matrix), tol=3)
+    return np.linalg.matrix_rank(np.matrix.transpose(matrix), tol=1)
+
+def calculateSeparabilityForData(params, creator, x):
+    reservoir = creator(**params)
+    matrix = np.ndarray((reservoir.units, len(x)))
+    for i in range(len(x)):
+        pred = reservoir.run(np.array(x[i]))[-1]
+        matrix[:, i] = pred
+    return np.linalg.matrix_rank(matrix)
 
 def calculateGeneralization(params, creator, testSet, noiseLevel=0.4):
     reservoir = creator(**params)
@@ -109,21 +116,31 @@ def calculateGeneralization(params, creator, testSet, noiseLevel=0.4):
     matrix = np.ndarray((reservoir.units, len(x2)))
     for i in range(len(x2)):
         input = np.array(x2[i])
-        noise = np.random.rand(*input.shape)*noiseLevel
+        noise = np.random.rand(*input.shape)*2*noiseLevel-noiseLevel
         pred = reservoir.run(input+noise)[-1]
         matrix[:, i] = pred
-    return np.linalg.matrix_rank(np.matrix.transpose(matrix), tol=3)
+    return np.linalg.matrix_rank(np.matrix.transpose(matrix), tol=1)
 
-def memoryCapacity(params, creator, numInputs=1, trainSize = 5000):
+def calculateGeneralizationForData(params, creator, x):
     reservoir = creator(**params)
+    matrix = np.ndarray((reservoir.units, len(x)))
+    for i in range(len(x)):
+        input = np.array(x[i])
+        noise = np.random.rand(*input.shape)*0.2-0.15
+        pred = reservoir.run(input+noise)[-1]
+        matrix[:, i] = pred
+    return np.linalg.matrix_rank(matrix)
+
+def memoryCapacity(params, creator, numInputs=1, trainSize = 1000):
     maxDelay = 30
     capacity = 0
-    readout = Ridge(output_dim=1, ridge=1e-5)
-    esn = reservoir>>readout
     for i in range(maxDelay):
         randomSeries = np.random.rand(trainSize+i, numInputs)
         targets = randomSeries[0:trainSize]
         inputs = randomSeries[i:]
+        reservoir = creator(**params)
+        readout = Ridge(output_dim=1)
+        esn = reservoir>>readout
         try:
             esn.fit(inputs, targets)
         except:
@@ -133,7 +150,8 @@ def memoryCapacity(params, creator, numInputs=1, trainSize = 5000):
         cov = abs(np.cov(np.squeeze(newRandomSeries[0:trainSize]), preds)[0, -1])
         v1 = np.var(np.squeeze(newRandomSeries[0:trainSize]))
         v2 = np.var(preds)
-        capacity+=cov*cov/(v1*v2)
+        capacity+=(np.corrcoef(np.squeeze(newRandomSeries[0:trainSize]), preds)[0, -1])**2
+        # capacity+=cov*cov/(v1*v2)
     return capacity
 
 def getBehaviourSpace(reservoirs):
@@ -148,7 +166,6 @@ def getBehaviourSpace(reservoirs):
         separability.append(calculateSeparability(reservoirParams['params'], creator, reservoirParams['testSet']))
         generalizability.append(calculateGeneralization(reservoirParams['params'], creator, reservoirParams['testSet']))
         mc.append(memoryCapacity(reservoirParams['params'], creator))
-        print(len(errors))
     file = open('logs/behaviorSpace_{}'.format(math.floor(time.time())), 'wb')
     pickle.dump({"separability": separability, "generalizability": generalizability, "mc": mc, "errors": errors}, file)
     file.close()
